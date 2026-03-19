@@ -256,15 +256,33 @@ export function scanPostPage() {
     return;
   }
 
-  const img = document.querySelector('.entry-content img, .wp-post-image, article img');
   const rjCode = extractRjCode();
+
+  // Try multiple strategies for finding the cover thumbnail
+  let thumb = getEntry(itemId)?.thumb || '';
+  if (!thumb) {
+    // Strategy 1: look for wp-post-image (featured image)
+    const featured = document.querySelector('.wp-post-image, .attachment-post-thumbnail');
+    if (featured) thumb = featured.dataset.src || featured.dataset.lazySrc || featured.src || '';
+    // Strategy 2: first image in entry content
+    if (!thumb || thumb.startsWith('data:')) {
+      const contentImg = document.querySelector('.entry-content img, article img');
+      if (contentImg) thumb = contentImg.dataset.src || contentImg.dataset.lazySrc || contentImg.src || '';
+    }
+    // Strategy 3: og:image meta tag (most reliable for cover art)
+    if (!thumb || thumb.startsWith('data:')) {
+      const ogImg = document.querySelector('meta[property="og:image"]');
+      if (ogImg) thumb = ogImg.content || '';
+    }
+    if (thumb && thumb.startsWith('data:')) thumb = '';
+  }
 
   const item = {
     itemId,
     rjCode,
     title: titleEl.textContent.trim(),
     url: location.href,
-    thumb: getEntry(itemId)?.thumb || (img ? (img.dataset.src || img.src || '') : ''),
+    thumb,
   };
 
   const host = titleEl.parentElement || titleEl;
