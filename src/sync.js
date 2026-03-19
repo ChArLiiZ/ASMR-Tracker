@@ -206,11 +206,27 @@ function mergeItems(local, remote) {
       merged[id] = remote[id];
       added++;
     } else {
-      const localTime = merged[id].updatedAt || '';
-      const remoteTime = remote[id].updatedAt || '';
+      const localEntry = merged[id];
+      const remoteEntry = remote[id];
+      const localTime = localEntry.updatedAt || '';
+      const remoteTime = remoteEntry.updatedAt || '';
       if (remoteTime > localTime) {
-        merged[id] = remote[id];
+        // Winner is remote, but preserve local thumb/title if remote is missing them
+        merged[id] = {
+          ...remoteEntry,
+          thumb: remoteEntry.thumb || localEntry.thumb || '',
+          title: remoteEntry.title || localEntry.title || '',
+          rjCode: remoteEntry.rjCode || localEntry.rjCode || '',
+        };
         updated++;
+      } else {
+        // Winner is local, but fill in missing fields from remote
+        merged[id] = {
+          ...localEntry,
+          thumb: localEntry.thumb || remoteEntry.thumb || '',
+          title: localEntry.title || remoteEntry.title || '',
+          rjCode: localEntry.rjCode || remoteEntry.rjCode || '',
+        };
       }
     }
   }
