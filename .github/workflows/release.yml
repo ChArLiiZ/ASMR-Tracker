@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ASMR Tracker ${{ steps.version.outputs.VERSION }}
+          body: |
+            ## 安裝方式
+
+            1. 安裝 [Violentmonkey](https://violentmonkey.github.io/)
+            2. 點擊下方 `asmr-tracker.user.js` 下載
+            3. Violentmonkey 會自動提示安裝
+
+            ---
+
+            完整說明請參考 [README](https://github.com/ChArLiiZ/ASMR-Tracker#readme) | [繁體中文](https://github.com/ChArLiiZ/ASMR-Tracker/blob/main/README.zh-TW.md)
+          files: dist/asmr-tracker.user.js
+          generate_release_notes: true

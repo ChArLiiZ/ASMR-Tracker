@@ -1,9 +1,10 @@
 const esbuild = require('esbuild');
+const { version } = require('./package.json');
 
 const banner = `// ==UserScript==
 // @name         ASMR Tracker
 // @namespace    kuro-asmr
-// @version      0.1.0
+// @version      ${version}
 // @description  追蹤與管理 ASMR 內容，支援自訂播放清單
 // @match        https://japaneseasmr.com/*
 // @grant        GM_getValue
