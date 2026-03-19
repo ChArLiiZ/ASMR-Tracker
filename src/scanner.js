@@ -7,13 +7,95 @@ import { showToast } from './toast.js';
 
 /* ── Helpers ─────────────────────────────────────────── */
 
-function guessThumb(el) {
+function guessThumbUrl(el) {
   if (!el) return '';
   const img = el.querySelector('img');
   if (!img) return '';
   const src = img.dataset.src || img.dataset.lazySrc || img.src || '';
   if (!src || src.startsWith('data:')) return '';
   return src;
+}
+
+/**
+ * Fetch an image URL and return a resized base64 JPEG data URI.
+ * Uses GM_xmlhttpRequest to bypass CORS restrictions.
+ */
+function captureThumbBase64(url) {
+  return new Promise((resolve) => {
+    if (!url || url.startsWith('data:')) { resolve(''); return; }
+    try {
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url,
+        responseType: 'blob',
+        onload: (res) => {
+          if (!res.response || res.status >= 400) { resolve(''); return; }
+          const reader = new FileReader();
+          reader.onload = () => {
+            const img = new Image();
+            img.onload = () => {
+              try {
+                const c = document.createElement('canvas');
+                const MAX = 200;
+                let w = img.naturalWidth, h = img.naturalHeight;
+                if (!w || !h) { resolve(''); return; }
+                const r = Math.min(MAX / w, MAX / h, 1);
+                c.width = Math.round(w * r);
+                c.height = Math.round(h * r);
+                c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+                resolve(c.toDataURL('image/jpeg', 0.65));
+              } catch { resolve(''); }
+            };
+            img.onerror = () => resolve('');
+            img.src = reader.result;
+          };
+          reader.onerror = () => resolve('');
+          reader.readAsDataURL(res.response);
+        },
+        onerror: () => resolve(''),
+        timeout: 8000,
+        ontimeout: () => resolve(''),
+      });
+    } catch { resolve(''); }
+  });
+}
+
+/** Find the best thumbnail URL on the current detail page. */
+function findPageThumbUrl() {
+  // Strategy 1: WordPress featured image
+  const featured = document.querySelector('.wp-post-image, .attachment-post-thumbnail');
+  if (featured) {
+    const src = featured.dataset.src || featured.dataset.lazySrc || featured.src || '';
+    if (src && !src.startsWith('data:')) return src;
+  }
+  // Strategy 2: first image in entry content
+  const contentImg = document.querySelector('.entry-content img, article img');
+  if (contentImg) {
+    const src = contentImg.dataset.src || contentImg.dataset.lazySrc || contentImg.src || '';
+    if (src && !src.startsWith('data:')) return src;
+  }
+  // Strategy 3: og:image meta tag (most reliable for cover art)
+  const ogImg = document.querySelector('meta[property="og:image"]');
+  if (ogImg?.content) return ogImg.content;
+  return '';
+}
+
+/**
+ * If the entry has no thumb or has a URL-based thumb, capture it as base64 in the background.
+ * Silently upserts the entry when capture completes.
+ */
+function ensureThumbCaptured(itemId, thumbUrl) {
+  if (!thumbUrl || !itemId) return;
+  const existing = getEntry(itemId)?.thumb || '';
+  // Already have a base64 thumb — skip
+  if (existing.startsWith('data:')) return;
+  captureThumbBase64(thumbUrl).then(b64 => {
+    if (!b64) return;
+    const latest = getEntry(itemId);
+    if (latest && (!latest.thumb || !latest.thumb.startsWith('data:'))) {
+      upsert(itemId, { ...latest, thumb: b64 });
+    }
+  });
 }
 
 function toggleInlineNote(host, item) {
@@ -48,13 +130,20 @@ function togglePlaylistMembership(item, playlistId) {
     current.push(playlistId);
     showToast(`已加入「${plName}」`, 'success');
   }
+  // Use existing base64 thumb if available, otherwise use URL (will be captured in background)
+  const thumb = entry.thumb || item.thumb || '';
   upsert(item.itemId, {
     title: item.title,
     url: item.url,
-    thumb: item.thumb,
+    thumb,
     rjCode: item.rjCode || entry.rjCode || '',
     playlists: current,
   });
+  // Background: capture thumb as base64 if it's still a URL or missing
+  const thumbUrl = thumb && !thumb.startsWith('data:') ? thumb : (item.thumb || findPageThumbUrl());
+  if (thumbUrl && !thumbUrl.startsWith('data:')) {
+    ensureThumbCaptured(item.itemId, thumbUrl);
+  }
 }
 
 function ensureActionsForItem(host, item, visualContainer, iconOnly = false, compact = false, insertAfterEl = null) {
@@ -154,12 +243,12 @@ function collectListItems() {
     const itemId = extractItemId(a.href);
     if (!itemId || seen.has(itemId)) return;
     seen.add(itemId);
-    const thumb = guessThumb(article);
+    const thumbUrl = guessThumbUrl(article);
     items.push({
       itemId,
       title: a.textContent.trim(),
       url: a.href,
-      thumb,
+      thumb: thumbUrl,
       rjCode: '',
       host: article,
     });
@@ -172,8 +261,12 @@ export function scanListPage() {
   items.forEach(({ itemId, title, url, thumb, host }) => {
     const item = { itemId, title, url, thumb, rjCode: '' };
     const old = getEntry(itemId);
-    if (old && thumb && !old.thumb) {
-      upsert(itemId, { ...old, thumb });
+    // If tracked but missing base64 thumb, capture in background
+    if (old && thumb) {
+      if (!old.thumb) {
+        upsert(itemId, { ...old, thumb });
+      }
+      ensureThumbCaptured(itemId, thumb);
     }
     ensureActionsForItem(host, item, null, true);
     applyVisualToHost(host, itemId);
@@ -258,32 +351,21 @@ export function scanPostPage() {
 
   const rjCode = extractRjCode();
 
-  // Try multiple strategies for finding the cover thumbnail
-  let thumb = getEntry(itemId)?.thumb || '';
-  if (!thumb) {
-    // Strategy 1: look for wp-post-image (featured image)
-    const featured = document.querySelector('.wp-post-image, .attachment-post-thumbnail');
-    if (featured) thumb = featured.dataset.src || featured.dataset.lazySrc || featured.src || '';
-    // Strategy 2: first image in entry content
-    if (!thumb || thumb.startsWith('data:')) {
-      const contentImg = document.querySelector('.entry-content img, article img');
-      if (contentImg) thumb = contentImg.dataset.src || contentImg.dataset.lazySrc || contentImg.src || '';
-    }
-    // Strategy 3: og:image meta tag (most reliable for cover art)
-    if (!thumb || thumb.startsWith('data:')) {
-      const ogImg = document.querySelector('meta[property="og:image"]');
-      if (ogImg) thumb = ogImg.content || '';
-    }
-    if (thumb && thumb.startsWith('data:')) thumb = '';
-  }
+  const existingThumb = getEntry(itemId)?.thumb || '';
+  const thumbUrl = findPageThumbUrl();
 
   const item = {
     itemId,
     rjCode,
     title: titleEl.textContent.trim(),
     url: location.href,
-    thumb,
+    thumb: existingThumb || thumbUrl,
   };
+
+  // Background: capture thumb as base64 if needed
+  if (thumbUrl) {
+    ensureThumbCaptured(itemId, thumbUrl);
+  }
 
   const host = titleEl.parentElement || titleEl;
   ensureActionsForItem(host, item, null, false, false, titleEl);

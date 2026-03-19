@@ -13,6 +13,7 @@ const banner = `// ==UserScript==
 // @grant        GM_xmlhttpRequest
 // @connect      api.github.com
 // @connect      gist.githubusercontent.com
+// @connect      *
 // ==/UserScript==`;
 
 const watch = process.argv.includes('--watch');
