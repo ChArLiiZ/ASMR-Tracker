@@ -1,19 +1,11 @@
 import { PANEL_ID } from './constants.js';
-import { getDB, getEntry, upsert, removeEntry, beginBatch, endBatch } from './db.js';
+import { getDB, getEntry, upsert, removeEntry, beginBatch, endBatch, cdnThumbFromRJ } from './db.js';
 import { extractItemId, extractRjCode, titleSimilarity } from './utils.js';
 import { getPlaylistsSorted, getPlaylist } from './playlist.js';
 import { createButton, applyVisualToHost } from './ui-helpers.js';
 import { showToast } from './toast.js';
 
 /* ── Helpers ─────────────────────────────────────────── */
-
-const THUMB_CDN = 'https://pic.weeabo0.xyz/';
-
-/** Build CDN thumbnail URL from RJ code. */
-function rjThumbUrl(rjCode) {
-  if (!rjCode) return '';
-  return THUMB_CDN + rjCode.toUpperCase() + '_img_main.jpg';
-}
 
 /** Get the best thumbnail URL from a list page article element. */
 function guessThumb(el) {
@@ -54,7 +46,7 @@ function bestThumbUrl(itemId, pageThumbUrl, rjCode) {
   const existing = getEntry(itemId)?.thumb || '';
   if (existing) return existing;
   if (pageThumbUrl) return pageThumbUrl;
-  return rjThumbUrl(rjCode);
+  return cdnThumbFromRJ(rjCode);
 }
 
 function toggleInlineNote(host, item) {
@@ -90,7 +82,7 @@ function togglePlaylistMembership(item, playlistId) {
     showToast(`已加入「${plName}」`, 'success');
   }
   const rjCode = item.rjCode || entry.rjCode || '';
-  const thumb = entry.thumb || item.thumb || findPageThumbUrl() || rjThumbUrl(rjCode);
+  const thumb = entry.thumb || item.thumb || findPageThumbUrl() || cdnThumbFromRJ(rjCode);
   upsert(item.itemId, {
     title: item.title,
     url: item.url,
@@ -147,15 +139,21 @@ function ensureActionsForItem(host, item, visualContainer, iconOnly = false, com
   }
 }
 
+const SIMILAR_CHECK_MAX_DB_SIZE = 2000;
+
 function checkSimilarTitles(host, itemId, title) {
   const entry = getEntry(itemId);
   if (entry && entry.playlists && entry.playlists.length > 0) return;
   if (host.querySelector('.kuro-similar-hint')) return;
 
   const db = getDB();
+  const dbKeys = Object.keys(db);
+  // Skip similarity check if DB is too large to avoid blocking UI
+  if (dbKeys.length > SIMILAR_CHECK_MAX_DB_SIZE) return;
+
   let bestMatch = null;
   let bestScore = 0;
-  for (const id in db) {
+  for (const id of dbKeys) {
     if (id === itemId) continue;
     const e = db[id];
     if (!e.title) continue;
@@ -217,14 +215,14 @@ export function scanListPage() {
   const items = collectListItems();
   items.forEach(({ itemId, title, url, thumb, rjCode, host }) => {
     const old = getEntry(itemId);
-    const item = { itemId, title, url, thumb: old?.thumb || thumb || rjThumbUrl(rjCode), rjCode };
+    const item = { itemId, title, url, thumb: old?.thumb || thumb || cdnThumbFromRJ(rjCode), rjCode };
     // If tracked but missing thumb or rjCode, auto-update
     if (old) {
       const patch = {};
       if (thumb && !old.thumb) patch.thumb = thumb;
       if (rjCode && !old.rjCode) {
         patch.rjCode = rjCode;
-        if (!old.thumb && !thumb) patch.thumb = rjThumbUrl(rjCode);
+        if (!old.thumb && !thumb) patch.thumb = cdnThumbFromRJ(rjCode);
       }
       if (Object.keys(patch).length > 0) upsert(itemId, { ...old, ...patch });
     }

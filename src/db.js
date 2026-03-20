@@ -1,11 +1,10 @@
-import { KEY, UI_STATE_KEY } from './constants.js';
+import { KEY, UI_STATE_KEY, THUMB_CDN } from './constants.js';
 import { nowIso, extractRjFromText } from './utils.js';
 import { getPlaylistIds } from './playlist.js';
 
 /* globals GM_getValue, GM_setValue, GM_deleteValue */
 
-const THUMB_CDN = 'https://pic.weeabo0.xyz/';
-function cdnThumbFromRJ(rjCode) {
+export function cdnThumbFromRJ(rjCode) {
   return rjCode ? THUMB_CDN + rjCode.toUpperCase() + '_img_main.jpg' : '';
 }
 
@@ -13,6 +12,7 @@ let db = loadDB();
 let refreshUICallback = null;
 let batchDepth = 0;
 let onSaveCallback = null;
+let cachedMaxOrder = null;
 
 export function setOnSaveCallback(fn) {
   onSaveCallback = fn;
@@ -37,7 +37,7 @@ export function saveDB(skipCallback = false) {
 }
 
 export function getDB() { return db; }
-export function setDB(newDb) { db = newDb; }
+export function setDB(newDb) { db = newDb; cachedMaxOrder = null; }
 
 export function setRefreshUICallback(fn) {
   refreshUICallback = fn;
@@ -56,20 +56,25 @@ export function deleteGMValue(key) {
 }
 
 function nextManualOrder() {
-  let max = -1;
-  for (const id in db) {
-    const o = db[id].manualOrder;
-    if (typeof o === 'number' && o > max) max = o;
+  if (cachedMaxOrder === null) {
+    let max = -1;
+    for (const id in db) {
+      const o = db[id].manualOrder;
+      if (typeof o === 'number' && o > max) max = o;
+    }
+    cachedMaxOrder = max;
   }
-  return max + 1;
+  return ++cachedMaxOrder;
 }
+
+let batchPlaylistIds = null;
 
 export function normalizeEntry(itemId, patch = {}) {
   const old = db[itemId] || {};
   const createdAt = old.createdAt || nowIso();
 
-  // Validate playlists: keep only IDs that still exist
-  const validIds = getPlaylistIds();
+  // Validate playlists: keep only IDs that still exist (use cached set during batch)
+  const validIds = batchDepth > 0 ? (batchPlaylistIds || (batchPlaylistIds = getPlaylistIds())) : getPlaylistIds();
   let playlists = patch.playlists !== undefined ? patch.playlists : (old.playlists || []);
   if (!Array.isArray(playlists)) playlists = [];
   playlists = playlists.filter(id => validIds.has(id));
@@ -103,6 +108,7 @@ export function endBatch() {
   if (batchDepth <= 0) { batchDepth = 0; return; }
   if (--batchDepth <= 0) {
     batchDepth = 0;
+    batchPlaylistIds = null;
     saveDB();
     if (refreshUICallback) refreshUICallback();
   }

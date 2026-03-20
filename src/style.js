@@ -73,7 +73,7 @@ export function injectStyle() {
     }
 
     /* === Visual states on page items === */
-    .kuro-tracked{box-shadow:inset 0 0 0 2px rgba(110,200,245,.4);box-shadow:inset 0 0 0 2px color-mix(in srgb, var(--kuro-pl-color, #6ec8f5) 40%, transparent)}
+    .kuro-tracked{box-shadow:inset 0 0 0 2px color-mix(in srgb, var(--kuro-pl-color, #6ec8f5) 40%, transparent)}
     .kuro-dimmed{opacity:.45}
 
     /* === Similar title warning === */

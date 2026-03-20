@@ -8,6 +8,8 @@ const DEFAULT_PLAYLISTS = {
 
 let playlists = loadPlaylists();
 let onChangeCallback = null;
+let sortedCache = null;
+let idsCache = null;
 
 function loadPlaylists() {
   try {
@@ -20,7 +22,13 @@ function loadPlaylists() {
   return defaults;
 }
 
+function invalidateCache() {
+  sortedCache = null;
+  idsCache = null;
+}
+
 export function savePlaylists() {
+  invalidateCache();
   try { GM_setValue(PLAYLIST_KEY, playlists); } catch {}
   if (onChangeCallback) onChangeCallback();
 }
@@ -38,13 +46,19 @@ export function getPlaylist(id) {
 }
 
 export function getPlaylistsSorted() {
-  return Object.entries(playlists)
-    .sort(([, a], [, b]) => (a.order ?? 999) - (b.order ?? 999))
-    .map(([id, pl]) => ({ id, ...pl }));
+  if (!sortedCache) {
+    sortedCache = Object.entries(playlists)
+      .sort(([, a], [, b]) => (a.order ?? 999) - (b.order ?? 999))
+      .map(([id, pl]) => ({ id, ...pl }));
+  }
+  return sortedCache;
 }
 
 export function getPlaylistIds() {
-  return new Set(Object.keys(playlists));
+  if (!idsCache) {
+    idsCache = new Set(Object.keys(playlists));
+  }
+  return idsCache;
 }
 
 export function createPlaylist(name, color, icon) {
@@ -88,8 +102,10 @@ export function deletePlaylist(id) {
 
 export function setPlaylists(data) {
   playlists = data;
+  invalidateCache();
 }
 
 export function reloadPlaylists() {
   playlists = loadPlaylists();
+  invalidateCache();
 }

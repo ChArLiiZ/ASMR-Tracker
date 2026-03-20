@@ -1,7 +1,7 @@
-import { PANEL_ID, TOGGLE_ID } from './constants.js';
-import { getDB, setDB, saveDB, getEntry, normalizeEntry, upsert, removeEntry, loadUIState, saveUIState, deleteGMValue, beginBatch, endBatch } from './db.js';
+import { PANEL_ID, TOGGLE_ID, THUMB_CDN } from './constants.js';
+import { getDB, setDB, saveDB, getEntry, normalizeEntry, upsert, removeEntry, loadUIState, saveUIState, deleteGMValue, beginBatch, endBatch, cdnThumbFromRJ } from './db.js';
 import { formatTime, isoDateOnly, extractRjFromText } from './utils.js';
-import { getPlaylistsSorted, getPlaylist, createPlaylist, renamePlaylist, recolorPlaylist, deletePlaylist, setPlaylistIcon, reorderPlaylists } from './playlist.js';
+import { getPlaylistsSorted, getPlaylist, getPlaylists, setPlaylists, savePlaylists, createPlaylist, renamePlaylist, recolorPlaylist, deletePlaylist, setPlaylistIcon, reorderPlaylists } from './playlist.js';
 import { createButton, makePlaceholderThumb } from './ui-helpers.js';
 import { showToast } from './toast.js';
 import { showSyncSettings, syncFull, getSyncConfig } from './sync.js';
@@ -137,10 +137,15 @@ function showImportPreview(file, refreshUI) {
     try { imported = JSON.parse(text); } catch { showToast('匯入失敗：JSON 格式錯誤', 'error'); return; }
     if (!imported || typeof imported !== 'object') { showToast('匯入失敗：資料格式無效', 'error'); return; }
 
+    // Support both formats: { items, playlists } (sync format) or flat items object
+    const importedItems = imported.items && typeof imported.items === 'object' ? imported.items : imported;
+    const importedPlaylists = imported.playlists && typeof imported.playlists === 'object' ? imported.playlists : null;
+
     const db = getDB();
-    const importIds = Object.keys(imported);
+    const importIds = Object.keys(importedItems);
     const newCount = importIds.filter(id => !db[id]).length;
     const updateCount = importIds.filter(id => db[id]).length;
+    const plCount = importedPlaylists ? Object.keys(importedPlaylists).length : 0;
 
     const overlay = document.createElement('div');
     overlay.className = 'kuro-import-preview';
@@ -151,22 +156,35 @@ function showImportPreview(file, refreshUI) {
         <div class="kuro-import-stat"><span>新增項目</span><strong>${newCount} 筆</strong></div>
         <div class="kuro-import-stat"><span>將更新</span><strong>${updateCount} 筆</strong></div>
         <div class="kuro-import-stat"><span>目前項目數</span><strong>${Object.keys(db).length} 筆</strong></div>
+        ${plCount > 0 ? `<div class="kuro-import-stat"><span>播放清單</span><strong>${plCount} 個</strong></div>` : ''}
         <div class="kuro-import-actions"></div>
       </div>
     `;
     const actions = overlay.querySelector('.kuro-import-actions');
     actions.appendChild(createButton('取消', () => { overlay.classList.remove('show'); setTimeout(() => overlay.remove(), 200); }));
     actions.appendChild(createButton(`確認匯入 ${importIds.length} 筆`, () => {
+      // Merge playlists first so normalizeEntry can validate against them
+      if (importedPlaylists) {
+        const localPl = getPlaylists();
+        const mergedPl = { ...localPl };
+        for (const id in importedPlaylists) {
+          if (!mergedPl[id]) mergedPl[id] = importedPlaylists[id];
+        }
+        setPlaylists(mergedPl);
+        savePlaylists();
+      }
+
       const normalized = {};
-      for (const id in imported) {
-        normalized[id] = normalizeEntry(id, imported[id]);
+      for (const id in importedItems) {
+        normalized[id] = normalizeEntry(id, importedItems[id]);
       }
       setDB({ ...db, ...normalized });
       saveDB();
       refreshUI();
       overlay.classList.remove('show');
       setTimeout(() => overlay.remove(), 200);
-      showToast(`已匯入 ${importIds.length} 筆（新增 ${newCount}，更新 ${updateCount}）`, 'success');
+      const plMsg = plCount > 0 ? `，${plCount} 個播放清單` : '';
+      showToast(`已匯入 ${importIds.length} 筆（新增 ${newCount}，更新 ${updateCount}${plMsg}）`, 'success');
     }));
     document.body.appendChild(overlay);
     requestAnimationFrame(() => { requestAnimationFrame(() => overlay.classList.add('show')); });
@@ -257,13 +275,22 @@ function showPlaylistManager(refreshUI) {
 
   let newIcon = '\u{1F3F7}';
 
-  function getItemCount(plId) {
+  function getAllPlaylistCounts() {
     const db = getDB();
-    return Object.values(db).filter(item => item.playlists?.includes(plId)).length;
+    const counts = {};
+    for (const id in db) {
+      const pls = db[id].playlists;
+      if (!pls) continue;
+      for (const plId of pls) {
+        counts[plId] = (counts[plId] || 0) + 1;
+      }
+    }
+    return counts;
   }
 
   function render() {
     const sorted = getPlaylistsSorted();
+    const plCounts = getAllPlaylistCounts();
     overlay.innerHTML = `<div class="kuro-pl-manager-content">
       <div class="kuro-plm-header">
         <h3>管理播放清單</h3>
@@ -329,7 +356,7 @@ function showPlaylistManager(refreshUI) {
     let dragSrcRow = null;
 
     sorted.forEach(pl => {
-      const count = getItemCount(pl.id);
+      const count = plCounts[pl.id] || 0;
       const row = document.createElement('div');
       row.className = 'kuro-plm-item';
       row.draggable = true;
@@ -537,7 +564,7 @@ export function ensurePanel(refreshUI) {
     const toggle = document.createElement('button');
     toggle.id = TOGGLE_ID;
     toggle.type = 'button';
-    toggle.innerHTML = '\u{1F3B5} 我的清單';
+    toggle.textContent = '\u{1F3B5} 我的清單';
     toggle.addEventListener('click', () => {
       const panel = document.getElementById(PANEL_ID);
       if (panel) {
@@ -656,14 +683,14 @@ export function ensurePanel(refreshUI) {
     });
     panel.querySelector('.kuro-sync-settings').addEventListener('click', () => showSyncSettings());
     panel.querySelector('.kuro-export').addEventListener('click', () => {
-      const db = getDB();
-      const blob = new Blob([JSON.stringify(db, null, 2)], { type: 'application/json' });
+      const payload = { items: getDB(), playlists: getPlaylists() };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
       a.download = `asmr-tracker-${new Date().toISOString().slice(0, 10)}.json`;
       a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-      showToast('已匯出 JSON', 'success');
+      showToast('已匯出 JSON（含播放清單）', 'success');
     });
     panel.querySelector('.kuro-import').addEventListener('click', () => panel.querySelector('.kuro-import-file').click());
     panel.querySelector('.kuro-import-file').addEventListener('change', (e) => {
@@ -673,7 +700,6 @@ export function ensurePanel(refreshUI) {
       e.target.value = '';
     });
     panel.querySelector('.kuro-capture-thumbs').addEventListener('click', async () => {
-      const THUMB_CDN = 'https://pic.weeabo0.xyz/';
       const db = getDB();
       const entries = Object.values(db);
       const total = entries.length;
@@ -716,7 +742,7 @@ export function ensurePanel(refreshUI) {
             showToast(`正在抓取 RJ code（${fetched}/${needFetch}）…`, 'info', 60000);
           }
         }
-        const cdnUrl = rjCode ? THUMB_CDN + rjCode.toUpperCase() + '_img_main.jpg' : '';
+        const cdnUrl = cdnThumbFromRJ(rjCode);
         upsert(entry.itemId, { ...entry, rjCode: rjCode || '', thumb: cdnUrl });
         if (cdnUrl) rebuilt++;
       }
@@ -804,9 +830,17 @@ export function ensurePanel(refreshUI) {
   updateToggleCount();
 }
 
+let lastPillsFingerprint = '';
+
 function rebuildFilterPills(panel) {
   const pillsContainer = panel.querySelector('.kuro-filter-pills');
   if (!pillsContainer) return;
+
+  const sorted = getPlaylistsSorted();
+  // Build a fingerprint to detect if playlists changed (name/icon/order/id)
+  const fingerprint = sorted.map(pl => `${pl.id}:${pl.name}:${pl.icon}`).join('|');
+  if (fingerprint === lastPillsFingerprint && pillsContainer.children.length > 0) return;
+  lastPillsFingerprint = fingerprint;
 
   // Preserve current active filter before rebuilding
   const currentFilter = panel.querySelector('.kuro-pill.active')?.dataset.filter || '';
@@ -814,7 +848,7 @@ function rebuildFilterPills(panel) {
 
   const filters = [
     { value: '', label: '全部', icon: '' },
-    ...getPlaylistsSorted().map(pl => ({ value: pl.id, label: pl.name, icon: pl.icon })),
+    ...sorted.map(pl => ({ value: pl.id, label: pl.name, icon: pl.icon })),
   ];
 
   // If the current filter no longer exists (e.g. playlist deleted), fall back to ''
@@ -875,7 +909,7 @@ export function renderPanel() {
     if (countEl) countEl.textContent = count;
   });
 
-  let items = allItems
+  const applyFilters = (source) => source
     .filter(item => !filter || item.playlists?.includes(filter))
     .filter(item => !search || `${item.title || ''} ${item.note || ''} ${item.rjCode || ''}`.toLowerCase().includes(search))
     .filter(item => !dateFrom || isoDateOnly(item.createdAt) >= dateFrom)
@@ -883,19 +917,15 @@ export function renderPanel() {
     .filter(item => !noThumb || !item.thumb)
     .filter(item => !hasNote || (item.note && String(item.note).trim()));
 
+  let items = applyFilters(allItems);
+
   if (sortMode === 'manual') {
     const needsInit = items.length > 0 && items.every(item => item.manualOrder === undefined || item.manualOrder === null);
     if (needsInit) {
       const seeded = [...items].sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
       seeded.forEach((item, idx) => { if (db[item.itemId]) db[item.itemId].manualOrder = idx; });
       saveDB();
-      items = allItems
-        .filter(item => !filter || item.playlists?.includes(filter))
-        .filter(item => !search || `${item.title || ''} ${item.note || ''} ${item.rjCode || ''}`.toLowerCase().includes(search))
-        .filter(item => !dateFrom || isoDateOnly(item.createdAt) >= dateFrom)
-        .filter(item => !dateTo || isoDateOnly(item.createdAt) <= dateTo)
-        .filter(item => !noThumb || !item.thumb)
-        .filter(item => !hasNote || (item.note && String(item.note).trim()));
+      items = applyFilters(allItems);
     }
   }
 

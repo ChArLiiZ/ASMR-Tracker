@@ -85,8 +85,10 @@ function init() {
   initSync();
 
   let mutationTimer = null;
+  let pendingRefresh = false;
   const observer = new MutationObserver((mutations) => {
-    if (mutationTimer) return;
+    // If already pending, skip expensive checks — a refresh is already scheduled
+    if (pendingRefresh) return;
     let shouldRefresh = false;
     for (const mutation of mutations) {
       for (const node of mutation.addedNodes) {
@@ -117,7 +119,10 @@ function init() {
       if (shouldRefresh) break;
     }
     if (shouldRefresh) {
+      pendingRefresh = true;
+      clearTimeout(mutationTimer);
       mutationTimer = setTimeout(() => {
+        pendingRefresh = false;
         mutationTimer = null;
         refreshUI();
       }, 100);

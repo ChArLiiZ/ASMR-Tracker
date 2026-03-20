@@ -6,3 +6,4 @@ export const PANEL_ID = 'kuro-panel-root';
 export const TOGGLE_ID = 'kuro-panel-toggle';
 export const STYLE_ID = 'kuro-asmr-style';
 export const TOAST_CONTAINER_ID = 'kuro-toast-container';
+export const THUMB_CDN = 'https://pic.weeabo0.xyz/';

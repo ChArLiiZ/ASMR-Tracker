@@ -1,5 +1,5 @@
-import { SYNC_KEY } from './constants.js';
-import { getDB, setDB, saveDB } from './db.js';
+import { SYNC_KEY, THUMB_CDN } from './constants.js';
+import { getDB, setDB, saveDB, cdnThumbFromRJ } from './db.js';
 import { getPlaylists, setPlaylists, savePlaylists, reloadPlaylists } from './playlist.js';
 import { showToast } from './toast.js';
 import { debounce, extractRjFromText } from './utils.js';
@@ -149,19 +149,18 @@ export async function syncPull(silent = false) {
     const remoteItems = remote.items || remote;
     const remotePlaylists = remote.playlists || null;
 
-    // Re-read DB right before merge to avoid overwriting local writes made during network request
+    // Get current in-memory DB for merge (note: this is the in-memory reference, not a re-read from storage)
     const localDB = getDB();
     const { merged, stats } = mergeItems(localDB, remoteItems);
 
     // Auto-fill missing rjCode from title, then generate CDN thumb
-    const THUMB_CDN = 'https://pic.weeabo0.xyz/';
     for (const id in merged) {
       const entry = merged[id];
       if (!entry.rjCode && entry.title) {
         entry.rjCode = extractRjFromText(entry.title);
       }
       if (!entry.thumb && entry.rjCode) {
-        entry.thumb = THUMB_CDN + entry.rjCode.toUpperCase() + '_img_main.jpg';
+        entry.thumb = cdnThumbFromRJ(entry.rjCode);
       }
     }
 
@@ -350,7 +349,7 @@ export function showSyncSettings() {
         <input type="checkbox" class="kuro-sync-auto">
         自動上傳（每次變更後推送至 Gist；下載請手動點「立即同步」）
       </label>
-      ${cfg.lastSync ? `<div class="kuro-mini" style="margin-top:4px">上次同步：${cfg.lastSync}</div>` : ''}
+      <div class="kuro-sync-last-sync"></div>
       <div class="kuro-sync-dialog-actions"></div>
     </div>
   `;
@@ -358,17 +357,29 @@ export function showSyncSettings() {
   // Set values via DOM API to avoid HTML injection
   overlay.querySelector('.kuro-sync-token').value = cfg.token || '';
   overlay.querySelector('.kuro-sync-gist-id').value = cfg.gistId || '';
+  if (cfg.lastSync) {
+    const lastSyncEl = overlay.querySelector('.kuro-sync-last-sync');
+    lastSyncEl.className = 'kuro-mini';
+    lastSyncEl.style.marginTop = '4px';
+    lastSyncEl.textContent = `上次同步：${cfg.lastSync}`;
+  }
   overlay.querySelector('.kuro-sync-auto').checked = !!cfg.autoSync;
 
   const actions = overlay.querySelector('.kuro-sync-dialog-actions');
 
+  // Unified close function to ensure Escape handler is always removed
+  let syncEscHandler;
+  const closeSyncDialog = () => {
+    overlay.classList.remove('show');
+    setTimeout(() => overlay.remove(), 200);
+    document.removeEventListener('keydown', syncEscHandler);
+  };
+  syncEscHandler = (e) => { if (e.key === 'Escape') closeSyncDialog(); };
+
   const closeBtn = document.createElement('button');
   closeBtn.className = 'kuro-btn';
   closeBtn.textContent = '取消';
-  closeBtn.addEventListener('click', () => {
-    overlay.classList.remove('show');
-    setTimeout(() => overlay.remove(), 200);
-  });
+  closeBtn.addEventListener('click', () => closeSyncDialog());
 
   const testBtn = document.createElement('button');
   testBtn.className = 'kuro-btn';
@@ -420,8 +431,7 @@ export function showSyncSettings() {
       saveSyncConfig({ token, gistId, autoSync: autoSyncChecked, lastSync: cfg.lastSync || '' });
       showToast('同步設定已儲存', 'success');
 
-      overlay.classList.remove('show');
-      setTimeout(() => overlay.remove(), 200);
+      closeSyncDialog();
 
       if (autoSyncChecked) {
         await syncFull(false);
@@ -442,8 +452,7 @@ export function showSyncSettings() {
     if (!confirm('確定要中斷雲端同步嗎？本機資料不會被刪除。')) return;
     saveSyncConfig({});
     showToast('已中斷雲端同步', 'info');
-    overlay.classList.remove('show');
-    setTimeout(() => overlay.remove(), 200);
+    closeSyncDialog();
   });
 
   actions.appendChild(closeBtn);
@@ -452,12 +461,6 @@ export function showSyncSettings() {
   actions.appendChild(saveBtn);
 
   document.body.appendChild(overlay);
-  const closeSyncDialog = () => {
-    overlay.classList.remove('show');
-    setTimeout(() => overlay.remove(), 200);
-    document.removeEventListener('keydown', syncEscHandler);
-  };
-  const syncEscHandler = (e) => { if (e.key === 'Escape') closeSyncDialog(); };
   document.addEventListener('keydown', syncEscHandler);
   requestAnimationFrame(() => {
     requestAnimationFrame(() => overlay.classList.add('show'));
