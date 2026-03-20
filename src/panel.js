@@ -1,6 +1,6 @@
 import { PANEL_ID, TOGGLE_ID } from './constants.js';
 import { getDB, setDB, saveDB, getEntry, normalizeEntry, upsert, removeEntry, loadUIState, saveUIState, deleteGMValue, beginBatch, endBatch } from './db.js';
-import { formatTime, isoDateOnly } from './utils.js';
+import { formatTime, isoDateOnly, extractRjFromText } from './utils.js';
 import { getPlaylistsSorted, getPlaylist, createPlaylist, renamePlaylist, recolorPlaylist, deletePlaylist, setPlaylistIcon, reorderPlaylists } from './playlist.js';
 import { createButton, makePlaceholderThumb } from './ui-helpers.js';
 import { showToast } from './toast.js';
@@ -604,6 +604,7 @@ export function ensurePanel(refreshUI) {
         <div class="kuro-actions-grid">
           <button type="button" class="kuro-btn kuro-export">匯出 JSON</button>
           <button type="button" class="kuro-btn kuro-import">匯入 JSON</button>
+          <button type="button" class="kuro-btn kuro-capture-thumbs">\u{1F5BC} 修復縮圖</button>
           <button type="button" class="kuro-btn kuro-clear-all">清空全部</button>
         </div>
         <div class="kuro-list"></div>
@@ -671,6 +672,59 @@ export function ensurePanel(refreshUI) {
       showImportPreview(file, refreshUI);
       e.target.value = '';
     });
+    panel.querySelector('.kuro-capture-thumbs').addEventListener('click', async () => {
+      const THUMB_CDN = 'https://pic.weeabo0.xyz/';
+      const db = getDB();
+      const entries = Object.values(db);
+      const total = entries.length;
+      const needFetch = entries.filter(e => !e.rjCode).length;
+      const withRJ = total - needFetch;
+      if (!confirm(`共 ${total} 筆（${withRJ} 筆已有 RJ code，${needFetch} 筆需要連線抓取）\n\n將自動前往每個項目頁面取得 RJ code 並重建縮圖。`)) return;
+
+      // Helper: fetch a page and extract RJ code from its HTML
+      function fetchRjCode(url) {
+        return new Promise((resolve) => {
+          if (typeof GM_xmlhttpRequest === 'undefined') { resolve(''); return; }
+          GM_xmlhttpRequest({
+            method: 'GET',
+            url,
+            timeout: 10000,
+            onload: (res) => {
+              try {
+                const m = res.responseText.match(/\b(RJ|VJ)\d{6,}\b/i);
+                resolve(m ? m[0].toUpperCase() : '');
+              } catch { resolve(''); }
+            },
+            onerror: () => resolve(''),
+            ontimeout: () => resolve(''),
+          });
+        });
+      }
+
+      showToast(`正在抓取 RJ code（0/${needFetch}）…`, 'info', 60000);
+      let fetched = 0;
+      let rebuilt = 0;
+
+      beginBatch();
+      for (const entry of entries) {
+        let rjCode = entry.rjCode;
+        // If no rjCode, fetch the page to extract it
+        if (!rjCode && entry.url) {
+          rjCode = await fetchRjCode(entry.url);
+          fetched++;
+          if (fetched % 3 === 0 || fetched === needFetch) {
+            showToast(`正在抓取 RJ code（${fetched}/${needFetch}）…`, 'info', 60000);
+          }
+        }
+        const cdnUrl = rjCode ? THUMB_CDN + rjCode.toUpperCase() + '_img_main.jpg' : '';
+        upsert(entry.itemId, { ...entry, rjCode: rjCode || '', thumb: cdnUrl });
+        if (cdnUrl) rebuilt++;
+      }
+      endBatch();
+      showToast(`已重建 ${rebuilt}/${total} 筆縮圖`, 'success');
+      renderPanel();
+    });
+
     panel.querySelector('.kuro-clear-all').addEventListener('click', () => {
       if (!confirm('確定要清空所有追蹤項目嗎？')) return;
       const dbSnapshot = { ...getDB() };

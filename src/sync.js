@@ -2,7 +2,7 @@ import { SYNC_KEY } from './constants.js';
 import { getDB, setDB, saveDB } from './db.js';
 import { getPlaylists, setPlaylists, savePlaylists, reloadPlaylists } from './playlist.js';
 import { showToast } from './toast.js';
-import { debounce } from './utils.js';
+import { debounce, extractRjFromText } from './utils.js';
 
 /* globals GM_getValue, GM_setValue, GM_xmlhttpRequest */
 
@@ -152,6 +152,29 @@ export async function syncPull(silent = false) {
     // Re-read DB right before merge to avoid overwriting local writes made during network request
     const localDB = getDB();
     const { merged, stats } = mergeItems(localDB, remoteItems);
+
+    // Auto-fill missing rjCode from title, then generate CDN thumb
+    const THUMB_CDN = 'https://pic.weeabo0.xyz/';
+    for (const id in merged) {
+      const entry = merged[id];
+      if (!entry.rjCode && entry.title) {
+        entry.rjCode = extractRjFromText(entry.title);
+      }
+      if (!entry.thumb && entry.rjCode) {
+        entry.thumb = THUMB_CDN + entry.rjCode.toUpperCase() + '_img_main.jpg';
+      }
+    }
+
+    // Diagnostic log
+    const mergedEntries = Object.values(merged);
+    const thumbCount = mergedEntries.filter(e => e.thumb).length;
+    const rjCount = mergedEntries.filter(e => e.rjCode).length;
+    console.log(`[ASMR Tracker] Sync merge: ${mergedEntries.length} items, ${thumbCount} with thumb, ${rjCount} with rjCode`);
+    if (mergedEntries.length > 0) {
+      const sample = mergedEntries[0];
+      console.log('[ASMR Tracker] Sample entry:', { itemId: sample.itemId, title: sample.title?.slice(0, 30), rjCode: sample.rjCode, thumb: sample.thumb?.slice(0, 60) });
+    }
+
     setDB(merged);
     saveDB(true); // skipCallback to avoid triggering autoSync push after pull
 
@@ -169,8 +192,11 @@ export async function syncPull(silent = false) {
     if (refreshUICallback) refreshUICallback();
 
     if (!silent) {
-      const msg = `已同步：新增 ${stats.added}，更新 ${stats.updated}，共 ${Object.keys(merged).length} 筆`;
-      showToast(msg, 'success');
+      const total = Object.keys(merged).length;
+      const tCount = Object.values(merged).filter(e => e.thumb).length;
+      const rCount = Object.values(merged).filter(e => e.rjCode).length;
+      const msg = `已同步：新增 ${stats.added}，更新 ${stats.updated}，共 ${total} 筆\n（${tCount} 有縮圖 / ${rCount} 有 RJ code）`;
+      showToast(msg, 'success', 8000);
     }
   } catch (err) {
     console.error('[ASMR Tracker] Sync pull failed:', err);

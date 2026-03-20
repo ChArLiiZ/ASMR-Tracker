@@ -28,6 +28,13 @@ export function extractRjCode(doc = document) {
   return m ? m[0].toUpperCase() : '';
 }
 
+/** Extract RJ/VJ code from any text string (title, etc.) */
+export function extractRjFromText(text) {
+  if (!text) return '';
+  const m = text.match(/\b(RJ|VJ)\d{6,}\b/i);
+  return m ? m[0].toUpperCase() : '';
+}
+
 export function debounce(fn, ms) {
   let timer;
   return (...args) => {

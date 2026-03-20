@@ -7,57 +7,23 @@ import { showToast } from './toast.js';
 
 /* ── Helpers ─────────────────────────────────────────── */
 
-function guessThumbUrl(el) {
-  if (!el) return '';
-  const img = el.querySelector('img');
-  if (!img) return '';
-  const src = img.dataset.src || img.dataset.lazySrc || img.src || '';
-  if (!src || src.startsWith('data:')) return '';
-  return src;
+const THUMB_CDN = 'https://pic.weeabo0.xyz/';
+
+/** Build CDN thumbnail URL from RJ code. */
+function rjThumbUrl(rjCode) {
+  if (!rjCode) return '';
+  return THUMB_CDN + rjCode.toUpperCase() + '_img_main.jpg';
 }
 
-/**
- * Fetch an image URL and return a resized base64 JPEG data URI.
- * Uses GM_xmlhttpRequest to bypass CORS restrictions.
- */
-function captureThumbBase64(url) {
-  return new Promise((resolve) => {
-    if (!url || url.startsWith('data:')) { resolve(''); return; }
-    try {
-      GM_xmlhttpRequest({
-        method: 'GET',
-        url,
-        responseType: 'blob',
-        onload: (res) => {
-          if (!res.response || res.status >= 400) { resolve(''); return; }
-          const reader = new FileReader();
-          reader.onload = () => {
-            const img = new Image();
-            img.onload = () => {
-              try {
-                const c = document.createElement('canvas');
-                const MAX = 200;
-                let w = img.naturalWidth, h = img.naturalHeight;
-                if (!w || !h) { resolve(''); return; }
-                const r = Math.min(MAX / w, MAX / h, 1);
-                c.width = Math.round(w * r);
-                c.height = Math.round(h * r);
-                c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-                resolve(c.toDataURL('image/jpeg', 0.65));
-              } catch { resolve(''); }
-            };
-            img.onerror = () => resolve('');
-            img.src = reader.result;
-          };
-          reader.onerror = () => resolve('');
-          reader.readAsDataURL(res.response);
-        },
-        onerror: () => resolve(''),
-        timeout: 8000,
-        ontimeout: () => resolve(''),
-      });
-    } catch { resolve(''); }
-  });
+/** Get the best thumbnail URL from a list page article element. */
+function guessThumb(el) {
+  if (!el) return '';
+  const imgs = el.querySelectorAll('img');
+  for (const img of imgs) {
+    const src = img.dataset.src || img.dataset.lazySrc || img.currentSrc || img.src || '';
+    if (src && !src.startsWith('data:')) return src;
+  }
+  return '';
 }
 
 /** Find the best thumbnail URL on the current detail page. */
@@ -68,34 +34,27 @@ function findPageThumbUrl() {
     const src = featured.dataset.src || featured.dataset.lazySrc || featured.src || '';
     if (src && !src.startsWith('data:')) return src;
   }
-  // Strategy 2: first image in entry content
-  const contentImg = document.querySelector('.entry-content img, article img');
-  if (contentImg) {
-    const src = contentImg.dataset.src || contentImg.dataset.lazySrc || contentImg.src || '';
+  // Strategy 2: images in entry content
+  const contentImgs = document.querySelectorAll('.entry-content img, article img');
+  for (const ci of contentImgs) {
+    const src = ci.dataset.src || ci.dataset.lazySrc || ci.currentSrc || ci.src || '';
     if (src && !src.startsWith('data:')) return src;
   }
-  // Strategy 3: og:image meta tag (most reliable for cover art)
+  // Strategy 3: og:image meta tag
   const ogImg = document.querySelector('meta[property="og:image"]');
   if (ogImg?.content) return ogImg.content;
   return '';
 }
 
 /**
- * If the entry has no thumb or has a URL-based thumb, capture it as base64 in the background.
- * Silently upserts the entry when capture completes.
+ * Get the best thumbnail URL for an item.
+ * Priority: existing DB thumb > page DOM thumb > CDN from RJ code
  */
-function ensureThumbCaptured(itemId, thumbUrl) {
-  if (!thumbUrl || !itemId) return;
+function bestThumbUrl(itemId, pageThumbUrl, rjCode) {
   const existing = getEntry(itemId)?.thumb || '';
-  // Already have a base64 thumb — skip
-  if (existing.startsWith('data:')) return;
-  captureThumbBase64(thumbUrl).then(b64 => {
-    if (!b64) return;
-    const latest = getEntry(itemId);
-    if (latest && (!latest.thumb || !latest.thumb.startsWith('data:'))) {
-      upsert(itemId, { ...latest, thumb: b64 });
-    }
-  });
+  if (existing) return existing;
+  if (pageThumbUrl) return pageThumbUrl;
+  return rjThumbUrl(rjCode);
 }
 
 function toggleInlineNote(host, item) {
@@ -130,20 +89,15 @@ function togglePlaylistMembership(item, playlistId) {
     current.push(playlistId);
     showToast(`已加入「${plName}」`, 'success');
   }
-  // Use existing base64 thumb if available, otherwise use URL (will be captured in background)
-  const thumb = entry.thumb || item.thumb || '';
+  const rjCode = item.rjCode || entry.rjCode || '';
+  const thumb = entry.thumb || item.thumb || findPageThumbUrl() || rjThumbUrl(rjCode);
   upsert(item.itemId, {
     title: item.title,
     url: item.url,
     thumb,
-    rjCode: item.rjCode || entry.rjCode || '',
+    rjCode,
     playlists: current,
   });
-  // Background: capture thumb as base64 if it's still a URL or missing
-  const thumbUrl = thumb && !thumb.startsWith('data:') ? thumb : (item.thumb || findPageThumbUrl());
-  if (thumbUrl && !thumbUrl.startsWith('data:')) {
-    ensureThumbCaptured(item.itemId, thumbUrl);
-  }
 }
 
 function ensureActionsForItem(host, item, visualContainer, iconOnly = false, compact = false, insertAfterEl = null) {
@@ -243,13 +197,16 @@ function collectListItems() {
     const itemId = extractItemId(a.href);
     if (!itemId || seen.has(itemId)) return;
     seen.add(itemId);
-    const thumbUrl = guessThumbUrl(article);
+    const thumbUrl = guessThumb(article);
+    const titleText = a.textContent.trim();
+    const rjMatch = titleText.match(/\b(RJ|VJ)\d{6,}\b/i);
+    const rjCode = rjMatch ? rjMatch[0].toUpperCase() : '';
     items.push({
       itemId,
-      title: a.textContent.trim(),
+      title: titleText,
       url: a.href,
       thumb: thumbUrl,
-      rjCode: '',
+      rjCode,
       host: article,
     });
   });
@@ -258,15 +215,18 @@ function collectListItems() {
 
 export function scanListPage() {
   const items = collectListItems();
-  items.forEach(({ itemId, title, url, thumb, host }) => {
-    const item = { itemId, title, url, thumb, rjCode: '' };
+  items.forEach(({ itemId, title, url, thumb, rjCode, host }) => {
     const old = getEntry(itemId);
-    // If tracked but missing base64 thumb, capture in background
-    if (old && thumb) {
-      if (!old.thumb) {
-        upsert(itemId, { ...old, thumb });
+    const item = { itemId, title, url, thumb: old?.thumb || thumb || rjThumbUrl(rjCode), rjCode };
+    // If tracked but missing thumb or rjCode, auto-update
+    if (old) {
+      const patch = {};
+      if (thumb && !old.thumb) patch.thumb = thumb;
+      if (rjCode && !old.rjCode) {
+        patch.rjCode = rjCode;
+        if (!old.thumb && !thumb) patch.thumb = rjThumbUrl(rjCode);
       }
-      ensureThumbCaptured(itemId, thumb);
+      if (Object.keys(patch).length > 0) upsert(itemId, { ...old, ...patch });
     }
     ensureActionsForItem(host, item, null, true);
     applyVisualToHost(host, itemId);
@@ -350,21 +310,23 @@ export function scanPostPage() {
   }
 
   const rjCode = extractRjCode();
-
-  const existingThumb = getEntry(itemId)?.thumb || '';
-  const thumbUrl = findPageThumbUrl();
+  const thumb = bestThumbUrl(itemId, findPageThumbUrl(), rjCode);
 
   const item = {
     itemId,
     rjCode,
     title: titleEl.textContent.trim(),
     url: location.href,
-    thumb: existingThumb || thumbUrl,
+    thumb,
   };
 
-  // Background: capture thumb as base64 if needed
-  if (thumbUrl) {
-    ensureThumbCaptured(itemId, thumbUrl);
+  // If tracked but missing thumb or rjCode, auto-update
+  const entry = getEntry(itemId);
+  if (entry) {
+    const patch = {};
+    if (thumb && !entry.thumb) patch.thumb = thumb;
+    if (rjCode && !entry.rjCode) patch.rjCode = rjCode;
+    if (Object.keys(patch).length > 0) upsert(itemId, { ...entry, ...patch });
   }
 
   const host = titleEl.parentElement || titleEl;

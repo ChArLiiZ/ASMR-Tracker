@@ -1,8 +1,13 @@
 import { KEY, UI_STATE_KEY } from './constants.js';
-import { nowIso } from './utils.js';
+import { nowIso, extractRjFromText } from './utils.js';
 import { getPlaylistIds } from './playlist.js';
 
 /* globals GM_getValue, GM_setValue, GM_deleteValue */
+
+const THUMB_CDN = 'https://pic.weeabo0.xyz/';
+function cdnThumbFromRJ(rjCode) {
+  return rjCode ? THUMB_CDN + rjCode.toUpperCase() + '_img_main.jpg' : '';
+}
 
 let db = loadDB();
 let refreshUICallback = null;
@@ -69,14 +74,23 @@ export function normalizeEntry(itemId, patch = {}) {
   if (!Array.isArray(playlists)) playlists = [];
   playlists = playlists.filter(id => validIds.has(id));
 
+  // Auto-extract rjCode from title if not provided
+  let rjCode = patch.rjCode !== undefined ? patch.rjCode : (old.rjCode || '');
+  if (!rjCode) {
+    const title = patch.title || old.title || '';
+    rjCode = extractRjFromText(title);
+  }
+
+  const thumb = patch.thumb !== undefined ? patch.thumb : (old.thumb || cdnThumbFromRJ(rjCode));
+
   return {
     ...old,
     ...patch,
     itemId,
     playlists,
-    rjCode: patch.rjCode !== undefined ? patch.rjCode : (old.rjCode || ''),
+    rjCode,
     note: patch.note !== undefined ? patch.note : (old.note || ''),
-    thumb: patch.thumb !== undefined ? patch.thumb : (old.thumb || ''),
+    thumb,
     manualOrder: patch.manualOrder !== undefined ? patch.manualOrder : (old.manualOrder ?? nextManualOrder()),
     createdAt,
     updatedAt: nowIso(),
